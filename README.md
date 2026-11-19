@@ -1,7 +1,8 @@
-# DICOM 影像批处理服务（匿名化 / 重标识）
+# DICOM 影像批处理服务（匿名化 / 重标识 / SR 测量导出）
 
 影像数据管理员将导出的 DICOM 整理为供研究数据湖关联使用的副本。本服务提供网页批量上传
-未压缩 DICOM、统一换号处理、并下载整批处理结果（zip）的能力。
+未压缩 DICOM、统一换号处理、下载整批处理结果（zip），以及从已发布结构化报告（SR）
+提取数值测量并关联影像证据导出 CSV 的能力。
 
 ## 处理规则
 
@@ -41,6 +42,44 @@
 5. **重试不变号**：确定性派生 + 映射表只插入不更新（`INSERT OR IGNORE`），重试绝不改变标识。
 6. **先落盘后入库**：对象文件 `fsync` + 原子 rename 后才写数据库记录。
 
+## SR 数值测量导出（数据湖分析）
+
+浏览器打开 **SR 测量导出** 页（`GET /export`），勾选一个或多个**处理成功（ready）**
+的批次后提交，即下载一份 UTF-8（带 BOM）CSV。导出为**按需实时计算、不缓存**：
+补传影像形成新的成功批次后重新导出，关联结果自动更新；原批次 zip 下载不受影响。
+
+### 提取与判定规则
+
+1. 只在所选成功批次交付的实例中识别 SR 文档（SOP Class 属于
+   `1.2.840.10008.5.1.4.1.1.88.*` 家族），递归遍历其 `ContentSequence`，
+   把每个 `NUM` 节点展开为一行。
+2. 每行输出：匿名 `PatientID`、来源 SR 的**新 SOP UID**、内容树路径
+   （序号+ValueType+概念编码，如 `1:CONTAINER[DCM/112000].2:CONTAINER[DCM/125007].1:NUM[SRT/G-A185]`）、
+   所属最近 CONTAINER 的编码三元组、测量概念编码三元组、数值与计量单位编码三元组。
+3. 每项测量只关联**同一内容组直接子节点**中的 IMAGE 证据：
+   - 0 个 IMAGE → `no_evidence`；多于 1 个 → `multiple_evidence`；
+   - 恰有 1 个时再校验其 `ReferencedSOPSequence`：引用的新 SOP UID 必须能在
+     **所选成功批次**的交付集合中找到、对象文件存在、且 `ReferencedSOPClassUID`
+     与交付实例的 SOP Class UID 相符；
+   - 未交付/对象缺失/引用不完整 → `missing`；类 UID 不符 → `class_mismatch`；
+     全部满足 → `linked`。
+4. **失败批次、未勾选批次的遗留对象不算证据**；同一原 SOP 的 SR 即便跨多个批次
+   复用也只展开一次。
+5. **整次拒绝（不产出半成品 CSV）**：所选批次不存在或非 ready、SR 对象文件缺失、
+   SR 解析失败、任一 NUM 缺少必需字段（概念编码、`MeasuredValueSequence.NumericValue`、
+   计量单位编码）。
+
+### CSV 列
+
+`anonymized_patient_id, source_sr_sop_uid, content_tree_path,
+container_code_scheme/value/meaning, concept_code_scheme/value/meaning,
+numeric_value, unit_code_scheme/value/meaning, evidence_status,
+evidence_status_label, evidence_reason, evidence_image_count,
+evidence_image_sop_uid, evidence_sop_class_uid`
+
+其中所有 UID/PatientID 均为换号后的匿名值；`evidence_image_sop_uid` 仅在
+`linked`/`missing`/`class_mismatch` 等可定位引用时填写。
+
 ## 目录结构
 
 ```
@@ -50,13 +89,14 @@ app/
   identifiers.py   确定性 UID / PatientID 派生
   dicom_proc.py    DICOM 校验、标识收集、映射、匿名化重标识、对象落盘
   services.py      批次编排、zip 原子打包、CSV 清单、状态机
+  export.py        SR 内容树 NUM 展开、IMAGE 证据判定、测量 CSV 导出
   web.py           Flask 路由与应用工厂
   wsgi.py          gunicorn 入口
-  templates/       上传页、批次详情页
+  templates/       上传页、批次详情页、SR 导出页
 samples/
-  generate_samples.py  合成样例生成器（含跨文件引用）
+  generate_samples.py  合成样例生成器（含跨文件引用、SR NUM/IMAGE 内容）
   data/                生成的 4 个样例 DICOM
-tests/             pytest 测试（含多进程并发与中断恢复）
+tests/             pytest 测试（含多进程并发、中断恢复、SR 导出规则）
 Dockerfile
 docker-compose.yml
 ```
@@ -86,7 +126,7 @@ pip install -r requirements.txt -r requirements-dev.txt
 # 生成含跨文件引用的合成样例
 python samples/generate_samples.py
 
-# 运行测试（15 个，含多进程并发）
+# 运行测试（含多进程并发与 SR 导出规则）
 pytest -q
 
 # 本地启动
@@ -111,6 +151,8 @@ DICOM_DATA_DIR=./data python -m flask --app app.wsgi:app run --debug
 | POST | `/upload` | multipart 多文件上传并同步处理，重定向到批次详情 |
 | GET | `/batches/<id>` | 批次状态、错误信息、文件清单 |
 | GET | `/batches/<id>/download` | 下载整批 zip（仅 `ready` 可用，否则 409） |
+| GET | `/export` | SR 测量导出页：勾选成功批次 |
+| POST | `/export` | 按所选成功批次导出 SR NUM 测量 CSV；硬性错误整次拒绝并重定向提示 |
 | GET | `/healthz` | 健康检查 |
 
 下载的 zip 内含处理后的 DICOM（以新 SOP UID 命名）与 `manifest.csv`，
@@ -124,4 +166,5 @@ DICOM_DATA_DIR=./data python -m flask --app app.wsgi:app run --debug
 - `rs_001.dcm`：RT Structure Set，经 `ReferencedFrameOfReferenceSequence`
   → `RTReferencedStudySequence` → `ContourImageSequence` 跨文件引用两张 CT 的 SOP UID；
 - `sr_001.dcm`：Enhanced SR，含 `ReferencedStudySequence`、`ReferencedSeriesSequence`、
-  `CurrentRequestedProcedureEvidenceSequence` 三级嵌套引用。
+  `CurrentRequestedProcedureEvidenceSequence` 三级嵌套引用；内容树含两个 NUM
+  （一个带同组唯一 IMAGE 证据指向 CT1，一个无 IMAGE），供 SR 测量导出演示。

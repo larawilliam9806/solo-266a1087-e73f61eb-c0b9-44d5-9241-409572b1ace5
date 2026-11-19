@@ -206,7 +206,60 @@ def make_sr(path: Path) -> None:
     text_item.ConceptNameCodeSequence[0].CodingSchemeDesignator = "DCM"
     text_item.ConceptNameCodeSequence[0].CodeMeaning = "Recommended Follow-up"
     text_item.TextValue = "Synthetic report referencing the CT series."
-    root.ContentSequence = [text_item]
+
+    # 测量组 CONTAINER：内含 NUM + 同组唯一 IMAGE 证据（引用 CT1）
+    group = Dataset()
+    group.ValueType = "CONTAINER"
+    group.ConceptNameCodeSequence = [Dataset()]
+    group.ConceptNameCodeSequence[0].CodeValue = "125007"
+    group.ConceptNameCodeSequence[0].CodingSchemeDesignator = "DCM"
+    group.ConceptNameCodeSequence[0].CodeMeaning = "Measurement Group"
+
+    num_lesion = Dataset()
+    num_lesion.ValueType = "NUM"
+    num_lesion.ConceptNameCodeSequence = [Dataset()]
+    num_lesion.ConceptNameCodeSequence[0].CodeValue = "G-A185"
+    num_lesion.ConceptNameCodeSequence[0].CodingSchemeDesignator = "SRT"
+    num_lesion.ConceptNameCodeSequence[0].CodeMeaning = "Length of Target Lesion"
+    measured = Dataset()
+    measured.NumericValue = "31.4"
+    unit_code = Dataset()
+    unit_code.CodeValue = "mm"
+    unit_code.CodingSchemeDesignator = "UCUM"
+    unit_code.CodeMeaning = "millimeter"
+    measured.MeasurementUnitsCodeSequence = [unit_code]
+    num_lesion.MeasuredValueSequence = [measured]
+
+    image_ref = Dataset()
+    image_ref.ValueType = "IMAGE"
+    image_ref.ConceptNameCodeSequence = [Dataset()]
+    image_ref.ConceptNameCodeSequence[0].CodeValue = "121112"
+    image_ref.ConceptNameCodeSequence[0].CodingSchemeDesignator = "DCM"
+    image_ref.ConceptNameCodeSequence[0].CodeMeaning = "Measurement image"
+    ref_sop = Dataset()
+    ref_sop.ReferencedSOPClassUID = CTImageStorage
+    ref_sop.ReferencedSOPInstanceUID = SOP_CT_1
+    image_ref.ReferencedSOPSequence = [ref_sop]
+
+    group.ContentSequence = [num_lesion, image_ref]
+
+    # 第二个 NUM：同组无 IMAGE，用于演示 no_evidence 状态
+    num_followup = Dataset()
+    num_followup.ValueType = "NUM"
+    num_followup.ConceptNameCodeSequence = [Dataset()]
+    num_followup.ConceptNameCodeSequence[0].CodeValue = "118565006"
+    num_followup.ConceptNameCodeSequence[0].CodingSchemeDesignator = "SCT"
+    num_followup.ConceptNameCodeSequence[0].CodeMeaning = "Volume"
+    measured2 = Dataset()
+    measured2.NumericValue = "2.75"
+    unit_code2 = Dataset()
+    unit_code2.CodeValue = "cm3"
+    unit_code2.CodingSchemeDesignator = "UCUM"
+    unit_code2.CodeMeaning = "cubic centimeter"
+    measured2.MeasurementUnitsCodeSequence = [unit_code2]
+    num_followup.MeasuredValueSequence = [measured2]
+
+    root.ContentSequence = [text_item, group, num_followup]
     ds.ContentSequence = [root]
     _write(ds, path)
 

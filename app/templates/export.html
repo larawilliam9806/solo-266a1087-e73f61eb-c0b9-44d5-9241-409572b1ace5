@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}SR 测量导出{% endblock %}
+{% block body %}
+<section class="card">
+  <h2 style="margin-top:0;">已发布 SR 数值测量导出</h2>
+  <p class="muted">
+    勾选一个或多个<b>处理成功（ready）</b>的批次，系统将展开这些批次交付的 SR
+    内容树（ContentSequence）中的全部 <b>NUM</b> 数值节点并导出 CSV，字段包含：
+    匿名 PatientID、来源 SR 的新 SOP UID、内容树路径、最近 CONTAINER 与测量概念的
+    编码、数值与单位，以及影像证据关联状态。
+  </p>
+  <p class="muted">
+    证据规则：每项测量只关联<b>同一内容组直接子节点中唯一的 IMAGE</b>；
+    影像必须由所勾选的成功批次交付且引用类 UID 相符。缺件、类不符、无证据、
+    多个证据会在 <code>evidence_status</code> 列分别标明；失败批次或未勾选批次的
+    遗留对象不计为证据。同一 SR 跨批复用只计一次。任一 SR 文件缺失、解析失败或
+    NUM 必需字段不全时，整次导出拒绝。导出为实时计算，补传影像形成新成功批次后
+    重新导出即可更新关联。
+  </p>
+  <form method="post" action="{{ url_for('export_run') }}">
+    {% if batches %}
+    <table>
+      <thead><tr>
+        <th>选择</th><th>批次 ID</th><th>状态</th><th>文件数</th>
+        <th>SR 数（去重）</th><th>创建时间</th><th>完成时间</th>
+      </tr></thead>
+      <tbody>
+      {% for b in batches %}
+        <tr>
+          <td>
+            <input type="checkbox" name="batch_ids" value="{{ b.id }}"
+                   {% if b.status != 'ready' or b.sr_count == 0 %}disabled{% endif %}>
+          </td>
+          <td><a href="{{ url_for('batch_detail', batch_id=b.id) }}"><code>{{ b.id }}</code></a></td>
+          <td class="status-{{ b.status }}">{{ b.status }}</td>
+          <td>{{ b.original_count }}</td>
+          <td>{{ b.sr_count }}</td>
+          <td>{{ b.created_at }}</td>
+          <td>{{ b.finished_at or '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted" style="margin-top:12px;">
+      非 ready 批次或不含 SR 的批次不可勾选。
+    </p>
+    <button class="btn" type="submit">导出 SR 测量 CSV</button>
+    {% else %}
+      <p class="muted">暂无批次，请先上传并处理 DICOM。</p>
+    {% endif %}
+  </form>
+</section>
+
+<section class="card">
+  <h2 style="margin-top:0;">evidence_status 取值说明</h2>
+  <table>
+    <thead><tr><th>状态码</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>linked</code></td><td>同组唯一 IMAGE，引用影像由所选成功批次交付、对象存在且引用类 UID 与实例 SOP Class UID 相符</td></tr>
+      <tr><td><code>missing</code></td><td>缺件：引用影像未由所选成功批次交付、对象文件缺失或 IMAGE 引用不完整</td></tr>
+      <tr><td><code>class_mismatch</code></td><td>引用类 UID 与交付实例的 SOP Class UID 不符</td></tr>
+      <tr><td><code>no_evidence</code></td><td>同组直接子节点中没有任何 IMAGE</td></tr>
+      <tr><td><code>multiple_evidence</code></td><td>同组直接子节点中有多个 IMAGE，证据不唯一</td></tr>
+    </tbody>
+  </table>
+</section>
+{% endblock %}

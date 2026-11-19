@@ -1,6 +1,7 @@
 """Flask 应用工厂与路由。"""
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from flask import (
     url_for,
 )
 
-from . import config, services
+from . import config, export, services
 from .db import get_db, init_db, recover_interrupted_batches
 
 
@@ -85,6 +86,43 @@ def create_app() -> Flask:
             mimetype="application/zip",
             as_attachment=True,
             download_name=f"batch_{batch_id}.zip",
+        )
+
+    @app.get("/export")
+    def export_page():
+        return render_template(
+            "export.html", batches=export.list_batches_with_sr_count()
+        )
+
+    @app.post("/export")
+    def export_run():
+        batch_ids = request.form.getlist("batch_ids")
+        if not batch_ids:
+            flash("请至少勾选一个处理成功的批次", "error")
+            return redirect(url_for("export_page"))
+        try:
+            csv_bytes, stats = export.export_measurements(batch_ids)
+        except export.ExportError as exc:
+            # 整次拒绝：不产出任何下载内容，回到导出页说明原因
+            flash(f"导出被拒绝：{exc}", "error")
+            return redirect(url_for("export_page"))
+        if stats["measurement_count"] == 0:
+            flash("所选批次的 SR 中没有 NUM 数值测量项，未生成导出文件", "error")
+            return redirect(url_for("export_page"))
+        from datetime import datetime
+
+        filename = f"sr_measurements_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        flash(
+            f"导出完成：{stats['sr_count']} 份 SR、"
+            f"{stats['measurement_count']} 项测量，"
+            f"其中 {stats['linked_count']} 项已关联唯一影像证据",
+            "ok",
+        )
+        return send_file(
+            io.BytesIO(csv_bytes),
+            mimetype="text/csv; charset=utf-8",
+            as_attachment=True,
+            download_name=filename,
         )
 
     @app.get("/healthz")

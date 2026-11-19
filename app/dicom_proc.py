@@ -31,6 +31,7 @@ UNCOMPRESSED_TS = {
 TAG_STUDY_UID = Tag(0x0020, 0x000D)
 TAG_SERIES_UID = Tag(0x0020, 0x000E)
 TAG_SOP_UID = Tag(0x0008, 0x0018)
+TAG_SOP_CLASS_UID = Tag(0x0008, 0x0016)
 TAG_PATIENT_ID = Tag(0x0010, 0x0020)
 TAG_PATIENT_NAME = Tag(0x0010, 0x0010)
 
@@ -68,6 +69,7 @@ class PlannedFile:
     series_uid: str
     sop_uid: str
     patient_id: str
+    sop_class_uid: str
     ds: pydicom.Dataset
     reused: bool = False          # 命中既有实例，直接复用对象存储文件
     object_relpath: str = ""
@@ -164,6 +166,14 @@ def plan_batch(tmp_files: list[tuple[str, Path]]) -> BatchPlan:
             series_uid = str(ds[TAG_SERIES_UID].value)
             sop_uid = str(ds[TAG_SOP_UID].value)
             patient_id = str(ds[TAG_PATIENT_ID].value) if TAG_PATIENT_ID in ds else ""
+            # 类 UID 不参与换号，原样记录供导出时做证据类相符校验；
+            # 顶层缺失时回退文件元信息（标准要求两处一致）
+            if TAG_SOP_CLASS_UID in ds and str(ds[TAG_SOP_CLASS_UID].value):
+                sop_class_uid = str(ds[TAG_SOP_CLASS_UID].value)
+            elif ds.file_meta and "MediaStorageSOPClassUID" in ds.file_meta:
+                sop_class_uid = str(ds.file_meta.MediaStorageSOPClassUID)
+            else:
+                sop_class_uid = ""
 
             # 批内同 SOP 去重/冲突
             if sop_uid in seen_sop:
@@ -175,7 +185,8 @@ def plan_batch(tmp_files: list[tuple[str, Path]]) -> BatchPlan:
 
             # 与库内既有实例比对：同 UID 同字节复用，字节不同整批拒绝
             row = conn.execute(
-                "SELECT sha256, object_path, new_sop_uid FROM instances WHERE sop_uid=?",
+                "SELECT sha256, object_path, new_sop_uid, sop_class_uid "
+                "FROM instances WHERE sop_uid=?",
                 (sop_uid,),
             ).fetchone()
             reused = False
@@ -187,6 +198,12 @@ def plan_batch(tmp_files: list[tuple[str, Path]]) -> BatchPlan:
                     )
                 reused = True
                 object_relpath = row["object_path"]
+                # 旧版本库行可能没有类 UID，用本批解析值补齐（类 UID 本就不换号）
+                if not row["sop_class_uid"] and sop_class_uid:
+                    conn.execute(
+                        "UPDATE instances SET sop_class_uid=? WHERE sop_uid=?",
+                        (sop_class_uid, sop_uid),
+                    )
 
             pf = PlannedFile(
                 tmp_path=tmp_path,
@@ -196,6 +213,7 @@ def plan_batch(tmp_files: list[tuple[str, Path]]) -> BatchPlan:
                 series_uid=series_uid,
                 sop_uid=sop_uid,
                 patient_id=patient_id,
+                sop_class_uid=sop_class_uid,
                 ds=ds,
                 reused=reused,
                 object_relpath=object_relpath,
@@ -348,12 +366,14 @@ def process_plan(plan: BatchPlan, batch_id: str) -> None:
                 if existing is None:
                     conn.execute(
                         "INSERT INTO instances"
-                        "(sop_uid, sha256, new_sop_uid, object_path) VALUES(?,?,?,?)",
+                        "(sop_uid, sha256, new_sop_uid, object_path, sop_class_uid) "
+                        "VALUES(?,?,?,?,?)",
                         (
                             pf.sop_uid,
                             pf.sha256,
                             plan.uid_remap[pf.sop_uid],
                             pf.object_relpath,
+                            pf.sop_class_uid,
                         ),
                     )
                 elif existing["sha256"] != pf.sha256:

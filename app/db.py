@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS instances (
     sha256         TEXT NOT NULL,
     new_sop_uid    TEXT NOT NULL UNIQUE,
     object_path    TEXT NOT NULL,              -- 处理结果在对象存储中的相对路径
+    sop_class_uid  TEXT NOT NULL DEFAULT '',   -- 原/新一致的 SOP Class UID（类 UID 不换号）
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -93,8 +94,22 @@ def init_db() -> None:
     conn = get_db()
     try:
         conn.executescript(SCHEMA)
+        _migrate_instance_sop_class(conn)
     finally:
         conn.close()
+
+
+def _migrate_instance_sop_class(conn: sqlite3.Connection) -> None:
+    """旧库 instances 表没有 sop_class_uid 列时补列（SQLite 支持 ADD COLUMN）。
+
+    历史行的类 UID 留空，由导出逻辑在读到空值时从对象文件懒回填，
+    避免在启动路径上批量解析 DICOM。
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(instances)").fetchall()}
+    if "sop_class_uid" not in cols:
+        conn.execute(
+            "ALTER TABLE instances ADD COLUMN sop_class_uid TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def recover_interrupted_batches() -> list[str]:

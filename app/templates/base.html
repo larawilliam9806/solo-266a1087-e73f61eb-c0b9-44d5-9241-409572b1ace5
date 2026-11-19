@@ -33,7 +33,11 @@
 <body>
 <header>
   <h1 style="margin:0;font-size:20px;">DICOM 影像批处理（匿名化 / 重标识）</h1>
-  <div style="margin-top:6px;"><a href="{{ url_for('index') }}">← 返回批次列表</a></div>
+  <div style="margin-top:6px;">
+    <a href="{{ url_for('index') }}">← 返回批次列表</a>
+    &nbsp;|&nbsp;
+    <a href="{{ url_for('export_page') }}">SR 测量导出</a>
+  </div>
 </header>
 <main>
   {% with messages = get_flashed_messages(with_categories=true) %}
